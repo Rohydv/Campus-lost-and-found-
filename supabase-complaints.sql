@@ -17,6 +17,12 @@ CREATE TABLE IF NOT EXISTS public.complaints (
 -- Enable Row Level Security (RLS)
 ALTER TABLE public.complaints ENABLE ROW LEVEL SECURITY;
 
+-- Drop existing policies if they exist to prevent duplication errors
+DROP POLICY IF EXISTS "complaints_select" ON public.complaints;
+DROP POLICY IF EXISTS "complaints_insert" ON public.complaints;
+DROP POLICY IF EXISTS "complaints_update_admin" ON public.complaints;
+DROP POLICY IF EXISTS "complaints_delete_admin" ON public.complaints;
+
 -- 1. Select Policy: Students can view their own complaints; admins can view all complaints
 CREATE POLICY "complaints_select"
   ON public.complaints FOR SELECT
