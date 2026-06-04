@@ -10,12 +10,17 @@ import {
   Eye,
   Shield,
   AlertOctagon,
+  MessageCircle,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../lib/supabase';
 import { useAllItems, useUpdateItem, useDeleteItem } from '../hooks/useItems';
 import { useAllClaims, useUpdateClaimStatus, useDeleteClaim } from '../hooks/useClaims';
 import { useAllComplaints, useUpdateComplaintStatus, useDeleteComplaint } from '../hooks/useComplaints';
+import { useAllMessages } from '../hooks/useMessages';
+import { MessageBubble } from '../components/ui/MessageBubble';
 import {
   formatDate,
   formatRelativeTime,
@@ -38,6 +43,7 @@ const TABS = [
   { id: 'users', label: 'Users' },
   { id: 'claims', label: 'Claims' },
   { id: 'complaints', label: 'Complaints' },
+  { id: 'chats', label: 'Chats' },
 ];
 
 function useAllUsers() {
@@ -71,6 +77,8 @@ export function AdminDashboard() {
   const { data: allUsers, isLoading: usersLoading } = useAllUsers();
   const { data: allClaims, isLoading: claimsLoading } = useAllClaims();
   const { data: allComplaints, isLoading: complaintsLoading } = useAllComplaints();
+  const { data: allMessages, isLoading: messagesLoading } = useAllMessages();
+  const [expandedThread, setExpandedThread] = useState<string | null>(null);
   const updateItem = useUpdateItem();
   const deleteItem = useDeleteItem();
   const promoteUser = usePromoteUser();
@@ -620,6 +628,127 @@ export function AdminDashboard() {
               ))}
             </div>
           )}
+        </div>
+      )}
+      {/* Admin Chats Monitor Tab */}
+      {activeTab === 'chats' && (
+        <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
+          <div className="p-6 border-b border-slate-50">
+            <div className="flex items-center gap-2">
+              <MessageCircle size={18} className="text-blue-600" />
+              <h2 className="font-semibold text-slate-900">All Student Conversations</h2>
+            </div>
+            <p className="text-xs text-slate-400 mt-1">
+              Read-only monitor of all messages exchanged between students. Use this to detect misuse or disputes.
+            </p>
+          </div>
+
+          {messagesLoading ? (
+            <div className="flex justify-center py-12"><Spinner /></div>
+          ) : !allMessages || allMessages.length === 0 ? (
+            <EmptyState
+              icon={<MessageCircle size={28} />}
+              title="No conversations yet"
+              description="Student conversations will appear here once they start messaging."
+            />
+          ) : (() => {
+            // Group messages by item_id to form threads
+            const threads: Record<string, typeof allMessages> = {};
+            for (const msg of allMessages) {
+              if (!threads[msg.item_id]) threads[msg.item_id] = [];
+              threads[msg.item_id].push(msg);
+            }
+
+            return (
+              <div className="divide-y divide-slate-50">
+                {Object.entries(threads)
+                  .sort(([, a], [, b]) =>
+                    new Date(b[b.length - 1].created_at).getTime() -
+                    new Date(a[a.length - 1].created_at).getTime()
+                  )
+                  .map(([itemId, msgs]) => {
+                    const itemTitle = msgs[0]?.items?.title ?? 'Unknown Item';
+                    const itemType = msgs[0]?.items?.type ?? 'unknown';
+                    const lastMsg = msgs[msgs.length - 1];
+                    const participants = Array.from(
+                      new Map(
+                        msgs.flatMap((m) => [
+                          m.sender ? [m.sender.id, m.sender.full_name] : null,
+                          m.receiver ? [m.receiver.id, m.receiver.full_name] : null,
+                        ].filter(Boolean) as [string, string][])
+                      ).values()
+                    );
+                    const isExpanded = expandedThread === itemId;
+
+                    return (
+                      <div key={itemId} className="hover:bg-slate-50 transition-colors">
+                        {/* Thread summary row */}
+                        <button
+                          className="w-full flex items-center gap-4 p-4 text-left"
+                          onClick={() => setExpandedThread(isExpanded ? null : itemId)}
+                        >
+                          <div className="p-2 rounded-xl bg-blue-50">
+                            <MessageCircle size={16} className="text-blue-600" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <Link
+                                to={`/items/${itemId}`}
+                                onClick={(e) => e.stopPropagation()}
+                                className="text-sm font-semibold text-blue-600 hover:underline truncate"
+                              >
+                                {itemTitle}
+                              </Link>
+                              <span className={cn(
+                                'px-1.5 py-0.5 text-[10px] font-bold rounded-full text-white flex-shrink-0',
+                                itemType === 'lost' ? 'bg-red-500' : 'bg-blue-600'
+                              )}>
+                                {itemType.toUpperCase()}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-400 mt-0.5 truncate">
+                              👥 {participants.slice(0, 3).join(', ')}{participants.length > 3 ? ` +${participants.length - 3}` : ''}
+                            </p>
+                            <p className="text-xs text-slate-500 mt-0.5 truncate italic">
+                              "{lastMsg.content}"
+                            </p>
+                          </div>
+                          <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                            <span className="text-xs text-slate-400">{formatRelativeTime(lastMsg.created_at)}</span>
+                            <span className="text-xs font-semibold bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
+                              {msgs.length} msg{msgs.length !== 1 ? 's' : ''}
+                            </span>
+                          </div>
+                          <div className="ml-2 text-slate-400">
+                            {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                          </div>
+                        </button>
+
+                        {/* Expanded thread messages — read only */}
+                        {isExpanded && (
+                          <div className="px-4 pb-4">
+                            <div className="bg-slate-50 rounded-2xl p-4 space-y-2 max-h-96 overflow-y-auto">
+                              {msgs.map((msg) => (
+                                <MessageBubble
+                                  key={msg.id}
+                                  message={msg}
+                                  isMe={false}  /* admin views all as 'other' to see names */
+                                  currentUserId="admin"
+                                  onReply={() => {}}
+                                  onAddReaction={() => {}}
+                                  onRemoveReaction={() => {}}
+                                  readOnly
+                                />
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+              </div>
+            );
+          })()}
         </div>
       )}
     </div>

@@ -12,10 +12,11 @@ import {
   Bell,
   TrendingUp,
   AlertOctagon,
+  X,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useMyItems, useUpdateItem, useDeleteItem } from '../hooks/useItems';
-import { useMessages, useMarkMessageRead, useSendMessage } from '../hooks/useMessages';
+import { useMessages, useMarkMessageRead, useSendMessage, useAddReaction, useRemoveReaction } from '../hooks/useMessages';
 import { useMyClaims } from '../hooks/useClaims';
 import { useMyComplaints, useCreateComplaint } from '../hooks/useComplaints';
 import {
@@ -36,6 +37,7 @@ import { Spinner } from '../components/ui/Spinner';
 import { DonutChart, BarChart } from '../components/ui/Charts';
 import { Modal } from '../components/ui/Modal';
 import { Textarea } from '../components/ui/Input';
+import { MessageBubble } from '../components/ui/MessageBubble';
 import type { Message } from '../types';
 import toast from 'react-hot-toast';
 
@@ -65,9 +67,13 @@ export function Dashboard() {
 
   const [selectedMessage, setSelectedMessage] = useState<Message | null>(null);
   const [replyText, setReplyText] = useState('');
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const [complaintModal, setComplaintModal] = useState(false);
   const [complaintTitle, setComplaintTitle] = useState('');
   const [complaintDesc, setComplaintDesc] = useState('');
+  const addReaction = useAddReaction();
+  const removeReaction = useRemoveReaction();
+  const threadEndRef = React.useRef<HTMLDivElement>(null);
 
   const setTab = (tab: string) => setSearchParams({ tab });
 
@@ -314,56 +320,136 @@ export function Dashboard() {
       )}
 
       {/* Messages Tab */}
-      {activeTab === 'messages' && (
-        <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
-          <div className="p-6 border-b border-slate-50">
-            <h2 className="font-semibold text-slate-900">Messages</h2>
-          </div>
-          {messagesLoading ? (
-            <div className="flex justify-center py-12"><Spinner /></div>
-          ) : messages?.length === 0 ? (
-            <EmptyState
-              icon={<MessageCircle size={28} />}
-              title="No messages yet"
-              description="Messages you send and receive about items will appear here."
-            />
-          ) : (
-            <div className="divide-y divide-slate-50">
-              {messages!.map((msg) => {
-                const isSender = msg.sender_id === user?.id;
-                const other = isSender ? msg.receiver : msg.sender;
-                return (
-                  <div
-                    key={msg.id}
-                    className={cn('flex items-start gap-4 p-4 hover:bg-slate-50 transition-colors cursor-pointer', !msg.is_read && msg.receiver_id === user?.id && 'bg-blue-50/50')}
-                    onClick={() => {
-                      if (!msg.is_read && msg.receiver_id === user?.id) markRead.mutate(msg.id);
-                      setSelectedMessage(msg);
-                    }}
-                  >
-                    <Avatar name={other?.full_name} size="md" />
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <p className="text-sm font-semibold text-slate-900">{other?.full_name}</p>
-                        {!msg.is_read && msg.receiver_id === user?.id && (
-                          <span className="w-2 h-2 rounded-full bg-blue-500" />
-                        )}
-                        <span className="text-xs text-slate-400 ml-auto">{formatRelativeTime(msg.created_at)}</span>
-                      </div>
-                      {msg.items && (
-                        <Link to={`/items/${msg.item_id}`} className="text-xs text-blue-600 hover:text-blue-800">
-                          Re: {msg.items.title}
-                        </Link>
-                      )}
-                      <p className="text-sm text-slate-600 mt-1 line-clamp-2">{msg.content}</p>
-                    </div>
-                  </div>
-                );
-              })}
+      {activeTab === 'messages' && (() => {
+        // Group all messages into conversations: key = otherUserId + itemId
+        const convMap = new Map<string, {
+          key: string;
+          otherUser: typeof messages extends (infer T)[] | undefined ? NonNullable<T>['sender'] : never;
+          itemId: string;
+          itemTitle: string;
+          itemType: string;
+          latestMsg: NonNullable<typeof messages>[number];
+          unreadCount: number;
+          anyMsg: NonNullable<typeof messages>[number];
+        }>();
+
+        (messages ?? []).forEach((msg) => {
+          const isSender = msg.sender_id === user?.id;
+          const otherId = isSender ? msg.receiver_id : msg.sender_id;
+          const other = isSender ? msg.receiver : msg.sender;
+          const key = `${otherId}__${msg.item_id}`;
+          const existing = convMap.get(key);
+          const isUnread = !msg.is_read && msg.receiver_id === user?.id;
+
+          if (!existing) {
+            convMap.set(key, {
+              key,
+              otherUser: other,
+              itemId: msg.item_id,
+              itemTitle: msg.items?.title ?? 'Item',
+              itemType: msg.items?.type ?? 'unknown',
+              latestMsg: msg,
+              unreadCount: isUnread ? 1 : 0,
+              anyMsg: msg,
+            });
+          } else {
+            if (isUnread) existing.unreadCount++;
+            // messages are already sorted newest first, so first one seen is latest
+          }
+        });
+
+        const conversations = Array.from(convMap.values());
+
+        return (
+          <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
+            <div className="p-5 border-b border-slate-50 flex items-center justify-between">
+              <h2 className="font-semibold text-slate-900">Messages</h2>
+              {conversations.length > 0 && (
+                <span className="text-xs text-slate-400">{conversations.length} conversation{conversations.length !== 1 ? 's' : ''}</span>
+              )}
             </div>
-          )}
-        </div>
-      )}
+            {messagesLoading ? (
+              <div className="flex justify-center py-12"><Spinner /></div>
+            ) : conversations.length === 0 ? (
+              <EmptyState
+                icon={<MessageCircle size={28} />}
+                title="No messages yet"
+                description="Messages you send and receive about items will appear here."
+              />
+            ) : (
+              <div className="divide-y divide-slate-50">
+                {conversations.map((conv) => {
+                  const hasUnread = conv.unreadCount > 0;
+                  return (
+                    <div
+                      key={conv.key}
+                      className={cn(
+                        'flex items-center gap-3 px-5 py-4 hover:bg-slate-50 active:bg-slate-100 transition-colors cursor-pointer',
+                        hasUnread && 'bg-blue-50/40'
+                      )}
+                      onClick={() => {
+                        // Mark all unread in this thread
+                        (messages ?? []).forEach((m) => {
+                          if (!m.is_read && m.receiver_id === user?.id && m.item_id === conv.itemId) {
+                            markRead.mutate(m.id);
+                          }
+                        });
+                        setSelectedMessage(conv.anyMsg);
+                      }}
+                    >
+                      {/* Avatar */}
+                      <div className="relative flex-shrink-0">
+                        <Avatar name={conv.otherUser?.full_name} size="lg" />
+                        {hasUnread && (
+                          <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] bg-blue-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center px-1">
+                            {conv.unreadCount}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Content */}
+                      <div className="flex-1 min-w-0">
+                        {/* Name + time */}
+                        <div className="flex items-center justify-between gap-2 mb-0.5">
+                          <p className={cn('text-sm truncate', hasUnread ? 'font-bold text-slate-900' : 'font-semibold text-slate-800')}>
+                            {conv.otherUser?.full_name ?? 'Unknown'}
+                          </p>
+                          <span className={cn('text-[11px] flex-shrink-0', hasUnread ? 'text-blue-600 font-semibold' : 'text-slate-400')}>
+                            {formatRelativeTime(conv.latestMsg.created_at)}
+                          </span>
+                        </div>
+
+                        {/* Item tag */}
+                        <div className="flex items-center gap-1.5 mb-1">
+                          <span className={cn(
+                            'text-[10px] font-bold px-1.5 py-0.5 rounded-full text-white',
+                            conv.itemType === 'lost' ? 'bg-red-500' : 'bg-blue-600'
+                          )}>
+                            {conv.itemType.toUpperCase()}
+                          </span>
+                          <span className="text-[11px] text-blue-600 truncate font-medium">{conv.itemTitle}</span>
+                        </div>
+
+                        {/* Latest message preview */}
+                        <p className={cn('text-xs truncate', hasUnread ? 'text-slate-700 font-medium' : 'text-slate-400')}>
+                          {conv.latestMsg.sender_id === user?.id ? 'You: ' : ''}{conv.latestMsg.content}
+                        </p>
+                      </div>
+
+                      {/* Chevron */}
+                      <div className="text-slate-300 flex-shrink-0">
+                        <svg width="16" height="16" fill="none" viewBox="0 0 24 24">
+                          <path d="M9 18l6-6-6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Claims Tab */}
       {activeTab === 'claims' && (
@@ -552,14 +638,15 @@ export function Dashboard() {
           onClose={() => {
             setSelectedMessage(null);
             setReplyText('');
+            setReplyingTo(null);
           }}
           title={`Conversation about ${selectedMessage.items?.title ?? 'Item'}`}
         >
-          <div className="flex flex-col h-[500px]">
-            {/* Thread Header details */}
-            <div className="pb-3 border-b border-slate-100 mb-4 flex items-center justify-between text-xs text-slate-500">
+          <div className="flex flex-col h-[560px]">
+            {/* Thread Header */}
+            <div className="pb-3 border-b border-slate-100 mb-3 flex items-center justify-between text-xs text-slate-500">
               <span>
-                Item:{" "}
+                Item:{' '}
                 <Link
                   to={`/items/${selectedMessage.item_id}`}
                   className="font-semibold text-blue-600 hover:underline"
@@ -572,8 +659,8 @@ export function Dashboard() {
               </span>
             </div>
 
-            {/* Conversation Messages Thread List */}
-            <div className="flex-1 overflow-y-auto space-y-3.5 pr-2 mb-4 scrollbar-thin">
+            {/* Message Thread */}
+            <div className="flex-1 overflow-y-auto space-y-2 pr-1 mb-3">
               {(() => {
                 const otherPartyId =
                   selectedMessage.sender_id === user?.id
@@ -590,80 +677,107 @@ export function Dashboard() {
                   .slice()
                   .reverse();
 
-                return threadMessages.map((msg) => {
-                  const isMe = msg.sender_id === user?.id;
-                  return (
-                    <div
-                      key={msg.id}
-                      className={cn(
-                        "flex flex-col max-w-[85%] rounded-2xl px-4 py-2.5 text-sm shadow-sm",
-                        isMe
-                          ? "bg-blue-600 text-white rounded-tr-none ml-auto"
-                          : "bg-slate-100 text-slate-800 rounded-tl-none mr-auto"
-                      )}
-                    >
-                      <p className="leading-relaxed whitespace-pre-wrap">{msg.content}</p>
-                      <span
-                        className={cn(
-                          "text-[9px] mt-1.5 self-end block",
-                          isMe ? "text-blue-200" : "text-slate-400"
-                        )}
-                      >
-                        {formatRelativeTime(msg.created_at)}
-                      </span>
-                    </div>
-                  );
-                });
+                return (
+                  <>
+                    {threadMessages.map((msg) => (
+                      <MessageBubble
+                        key={msg.id}
+                        message={msg}
+                        isMe={msg.sender_id === user?.id}
+                        currentUserId={user!.id}
+                        onReply={(m) => setReplyingTo(m)}
+                        onAddReaction={(msgId, emoji) =>
+                          addReaction.mutate({ messageId: msgId, userId: user!.id, emoji })
+                        }
+                        onRemoveReaction={(msgId, emoji) =>
+                          removeReaction.mutate({ messageId: msgId, userId: user!.id, emoji })
+                        }
+                      />
+                    ))}
+                    <div ref={threadEndRef} />
+                  </>
+                );
               })()}
             </div>
 
-            {/* Reply Input Form */}
+            {/* Reply Input */}
             <div className="pt-3 border-t border-slate-100 flex flex-col gap-2">
+              {/* Quoted reply context bar */}
+              {replyingTo && (
+                <div className="flex items-start gap-2 bg-blue-50 border-l-4 border-blue-400 rounded-xl px-3 py-2">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[11px] font-semibold text-blue-600">
+                      Replying to {replyingTo.sender_id === user?.id ? 'yourself' : (replyingTo.sender?.full_name ?? 'them')}
+                    </p>
+                    <p className="text-xs text-slate-500 truncate">{replyingTo.content}</p>
+                  </div>
+                  <button
+                    onClick={() => setReplyingTo(null)}
+                    className="text-slate-400 hover:text-red-500 mt-0.5"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              )}
               <Textarea
-                placeholder="Type your reply message here..."
+                placeholder={replyingTo ? 'Write your reply...' : 'Type a message...'}
                 value={replyText}
                 onChange={(e) => setReplyText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                    e.preventDefault();
+                    (e.target as HTMLElement).closest('div')?.querySelector('button[data-send]')?.dispatchEvent(new MouseEvent('click'));
+                  }
+                }}
                 rows={3}
                 className="w-full text-sm"
               />
-              <div className="flex gap-2 justify-end">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    setSelectedMessage(null);
-                    setReplyText('');
-                  }}
-                >
-                  Close
-                </Button>
-                <Button
-                  variant="primary"
-                  size="sm"
-                  loading={sendMessage.isPending}
-                  disabled={!replyText.trim()}
-                  onClick={async () => {
-                    if (!replyText.trim() || !selectedMessage) return;
-                    const receiverId =
-                      selectedMessage.sender_id === user?.id
-                        ? selectedMessage.receiver_id
-                        : selectedMessage.sender_id;
-                    try {
-                      await sendMessage.mutateAsync({
-                        item_id: selectedMessage.item_id,
-                        sender_id: user!.id,
-                        receiver_id: receiverId,
-                        content: replyText.trim(),
-                      });
+              <div className="flex gap-2 justify-between items-center">
+                <p className="text-[11px] text-slate-400">Ctrl+Enter to send</p>
+                <div className="flex gap-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setSelectedMessage(null);
                       setReplyText('');
-                      toast.success('Message sent');
-                    } catch {
-                      toast.error('Failed to send message');
-                    }
-                  }}
-                >
-                  Send Reply
-                </Button>
+                      setReplyingTo(null);
+                    }}
+                  >
+                    Close
+                  </Button>
+                  <Button
+                    data-send
+                    variant="primary"
+                    size="sm"
+                    loading={sendMessage.isPending}
+                    disabled={!replyText.trim()}
+                    onClick={async () => {
+                      if (!replyText.trim() || !selectedMessage) return;
+                      const receiverId =
+                        selectedMessage.sender_id === user?.id
+                          ? selectedMessage.receiver_id
+                          : selectedMessage.sender_id;
+                      try {
+                        await sendMessage.mutateAsync({
+                          item_id: selectedMessage.item_id,
+                          sender_id: user!.id,
+                          receiver_id: receiverId,
+                          content: replyText.trim(),
+                          reply_to_id: replyingTo?.id ?? null,
+                        });
+                        setReplyText('');
+                        setReplyingTo(null);
+                        toast.success('Message sent');
+                        setTimeout(() => threadEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+                      } catch {
+                        toast.error('Failed to send message');
+                      }
+                    }}
+                  >
+                    Send
+                  </Button>
+                </div>
               </div>
             </div>
           </div>

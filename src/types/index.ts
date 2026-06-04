@@ -44,6 +44,15 @@ export interface Item {
   profiles?: Profile;
 }
 
+export interface MessageReaction {
+  id: string;
+  message_id: string;
+  user_id: string;
+  emoji: string;
+  created_at: string;
+  profiles?: { full_name: string };
+}
+
 export interface Message {
   id: string;
   item_id: string;
@@ -51,10 +60,18 @@ export interface Message {
   receiver_id: string;
   content: string;
   is_read: boolean;
+  reply_to_id?: string | null;
   created_at: string;
   sender?: Profile;
   receiver?: Profile;
   items?: Pick<Item, 'id' | 'title' | 'type'>;
+  reply_to?: {
+    id: string;
+    content: string;
+    sender_id: string;
+    sender?: { full_name: string };
+  } | null;
+  message_reactions?: MessageReaction[];
 }
 
 export interface Claim {
